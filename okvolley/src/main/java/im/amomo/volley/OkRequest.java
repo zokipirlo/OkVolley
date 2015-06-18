@@ -127,6 +127,9 @@ public abstract class OkRequest<T> extends Request<T> {
     private boolean mIgnoreCloseExceptions = true;
     private String mRequestUrl;
 
+    private int mConnectTimeoutMs = -1;
+    private int mReadTimeoutMs = -1;
+    private int mWriteTimeoutMs = -1;
 
     /**
      * construct method
@@ -735,6 +738,95 @@ public abstract class OkRequest<T> extends Request<T> {
         return header(HEADER_REFERER, referer);
     }
 
+    /**
+     * Get connection timeout in ms
+     * @return this request
+     */
+    public int getConnectionTimeoutMs()
+    {
+        return mConnectTimeoutMs;
+    }
+
+    /**
+     * Get read timeout in ms
+     * @return this request
+     */
+    public int getReadTimeoutMs()
+    {
+        return mReadTimeoutMs;
+    }
+
+    /**
+     * Get write timeout in ms
+     * @return this request
+     */
+    public int getWriteTimeoutMs()
+    {
+        return mWriteTimeoutMs;
+    }
+
+    /**
+     * Set connection timeout in ms
+     * @param timeout in ms
+     * @return this request
+     */
+    public void connectionTimeoutMs(int timeout)
+    {
+        mConnectTimeoutMs = timeout;
+    }
+
+    /**
+     * Set read timeout in ms
+     * @param timeout in ms
+     * @return this request
+     */
+    public void readTimeoutMs(int timeout)
+    {
+        mReadTimeoutMs = timeout;
+    }
+
+    /**
+     * Set write timeout in ms
+     * @param timeout in ms
+     * @return this request
+     */
+    public void writeTimeoutMs(int timeout)
+    {
+        mWriteTimeoutMs = timeout;
+    }
+
+    /**
+     * Mark request as fast (small timeout values)
+     * @return this request
+     */
+    public void fast()
+    {
+        mConnectTimeoutMs = 2500;
+        mReadTimeoutMs = 2500;
+        mWriteTimeoutMs = 2500;
+    }
+
+    /**
+     * Mark request for long read (long read timeout; long polling or downloading)
+     * @return this request
+     */
+    public void longRead()
+    {
+        mConnectTimeoutMs = 2500;
+        mReadTimeoutMs = 60000;
+        mWriteTimeoutMs = 2500;
+    }
+
+    /**
+     * Mark request for long write (long write timeout - upload)
+     * @return this request
+     */
+    public void longWrite()
+    {
+        mConnectTimeoutMs = 2500;
+        mReadTimeoutMs = 2500;
+        mWriteTimeoutMs = 60000;
+    }
     /**
      * Copy from input stream to output stream
      *

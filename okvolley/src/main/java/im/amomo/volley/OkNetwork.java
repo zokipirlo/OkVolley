@@ -1,7 +1,5 @@
 package im.amomo.volley;
 
-import android.os.SystemClock;
-
 import com.android.volley.AuthFailureError;
 import com.android.volley.Cache;
 import com.android.volley.Network;
@@ -15,27 +13,35 @@ import com.android.volley.TimeoutError;
 import com.android.volley.VolleyError;
 import com.android.volley.VolleyLog;
 import com.android.volley.toolbox.ByteArrayPool;
+import com.squareup.okhttp.Headers;
 import com.squareup.okhttp.Response;
 
-import org.apache.http.conn.ConnectTimeoutException;
-import org.apache.http.impl.cookie.DateUtils;
+import android.os.SystemClock;
 
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.SocketTimeoutException;
+import java.text.SimpleDateFormat;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 
-import okio.Buffer;
-import okio.GzipSource;
+import static java.net.HttpURLConnection.HTTP_MOVED_PERM;
+import static java.net.HttpURLConnection.HTTP_MOVED_TEMP;
+import static java.net.HttpURLConnection.HTTP_NOT_MODIFIED;
+import static java.net.HttpURLConnection.HTTP_UNAUTHORIZED;
+import static java.net.HttpURLConnection.HTTP_FORBIDDEN;
 
 /**
  * Created by GoogolMo on 11/26/13.
+ * Modified by zoki on 06/17/15
  */
 public class OkNetwork implements Network {
+
+    private static final String PATTERN_RFC1123 = "EEE, dd MMM yyyy HH:mm:ss zzz";
 
     protected static final boolean DEBUG = VolleyLog.DEBUG;
 
@@ -46,6 +52,8 @@ public class OkNetwork implements Network {
     protected final OkStack mHttpStack;
 
     protected final ByteArrayPool mPool;
+
+    private final SimpleDateFormat mDateFormatter;
 
     /**
      * @param httpStack HTTP stack to be used
@@ -63,6 +71,7 @@ public class OkNetwork implements Network {
     public OkNetwork(OkStack httpStack, ByteArrayPool pool) {
         mHttpStack = httpStack;
         mPool = pool;
+        mDateFormatter = new SimpleDateFormat(PATTERN_RFC1123, Locale.US);
     }
 
     @Override
@@ -79,48 +88,38 @@ public class OkNetwork implements Network {
                 httpResponse = mHttpStack.performRequest(request, headers);
                 int statusCode = httpResponse.code();
 
-                responseHeaders = new TreeMap<String, String>();
-
-                for (String field : httpResponse.headers()
-                        .names()) {
-                    responseHeaders.put(field, httpResponse.headers()
-                            .get(field));
-                }
-
+                responseHeaders = convertHeaders(httpResponse.headers());
                 // Handle cache validation.
-                if (statusCode == 304) {
-                    return new NetworkResponse(304,
-                            request.getCacheEntry().data, responseHeaders, true);
-                }
-
-                if (httpResponse.body() != null) {
-
-                    if (responseGzip(responseHeaders)) {
-                        Buffer buffer = new Buffer();
-                        GzipSource gzipSource = new GzipSource(httpResponse.body()
-                                .source());
-                        while (gzipSource.read(buffer, Integer.MAX_VALUE) != -1) {
-
-                        }
-                        responseContents = buffer.readByteArray();
-                    } else {
-                        responseContents = httpResponse.body()
-                                .bytes();
+                if (statusCode == HTTP_NOT_MODIFIED) {
+                    Cache.Entry entry = request.getCacheEntry();
+                    if (entry == null) {
+                        return new NetworkResponse(HTTP_NOT_MODIFIED, null,
+                            responseHeaders, true,
+                            SystemClock.elapsedRealtime() - requestStart);
                     }
 
+                    // A HTTP 304 response does not have all header fields. We
+                    // have to use the header fields from the cache entry plus
+                    // the new ones from the response.
+                    // http://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html#sec10.3.5
+                    entry.responseHeaders.putAll(responseHeaders);
+                    return new NetworkResponse(HTTP_NOT_MODIFIED, entry.data,
+                        entry.responseHeaders, true,
+                        SystemClock.elapsedRealtime() - requestStart);
+                }
+
+                // Handle moved resources
+                if (statusCode == HTTP_MOVED_PERM || statusCode == HTTP_MOVED_TEMP) {
+                    String newUrl = responseHeaders.get("Location");
+                    request.setRedirectUrl(newUrl);
+                }
+
+                // Some responses such as 204s do not have content.  We must check.
+                if (httpResponse.body() != null) {
+                    responseContents = httpResponse.body().bytes();
                 } else {
                     responseContents = new byte[0];
                 }
-
-//                // Some responses such as 204s do not have content.  We must check.
-//                if (httpResponse.getEntity() != null) {
-//                    responseContents = entityToBytes(httpResponse.getEntity()
-//                            , responseGzip(responseHeaders));
-//                } else {
-//                    // Add 0 byte response as a way of honestly representing a
-//                    // no-content request.
-//                    responseContents = new byte[0];
-//                }
 
                 // if the request is slow, log it.
                 long requestLifetime = SystemClock.elapsedRealtime() - requestStart;
@@ -132,27 +131,28 @@ public class OkNetwork implements Network {
                 return new NetworkResponse(statusCode, responseContents, responseHeaders, false);
             } catch (SocketTimeoutException e) {
                 attemptRetryOnException("socket", request, new TimeoutError());
-            } catch (ConnectTimeoutException e) {
-                attemptRetryOnException("connection", request, new TimeoutError());
             } catch (MalformedURLException e) {
                 throw new RuntimeException("Bad URL " + request.getUrl(), e);
             } catch (IOException e) {
-                int statusCode;
+                int statusCode = 0;
                 NetworkResponse networkResponse = null;
                 if (httpResponse != null) {
                     statusCode = httpResponse.code();
                 } else {
                     throw new NoConnectionError(e);
                 }
-                VolleyLog.e("Unexpected response code %d for %s", statusCode, request.getUrl());
+                if (statusCode == HTTP_MOVED_PERM || statusCode == HTTP_MOVED_TEMP) {
+                    VolleyLog.e("Request at %s has been redirected to %s", request.getOriginUrl(), request.getUrl());
+                } else {
+                    VolleyLog.e("Unexpected response code %d for %s", statusCode, request.getUrl());
+                }
 
                 if (responseContents != null) {
-                    networkResponse = new NetworkResponse(statusCode, responseContents,
-                            responseHeaders, false);
-                    if (statusCode == 401 ||
-                            statusCode == 403) {
-                        attemptRetryOnException("auth",
-                                request, new AuthFailureError(networkResponse));
+                    networkResponse = new NetworkResponse(statusCode, responseContents, responseHeaders, false, SystemClock.elapsedRealtime() - requestStart);
+                    if (statusCode == HTTP_UNAUTHORIZED || statusCode == HTTP_FORBIDDEN) {
+                        attemptRetryOnException("auth", request, new AuthFailureError(networkResponse));
+                    } else if (statusCode == HTTP_MOVED_PERM || statusCode == HTTP_MOVED_TEMP) {
+                        attemptRetryOnException("redirect", request, new AuthFailureError(networkResponse));
                     } else {
                         // TODO: Only throw ServerError for 5xx status codes.
                         throw new ServerError(networkResponse);
@@ -162,20 +162,6 @@ public class OkNetwork implements Network {
                 }
             }
         }
-    }
-
-    private static boolean responseGzip(Map<String, String> headers) {
-        for (Map.Entry<String, String> entry : headers.entrySet()) {
-            if (entry.getKey()
-                    .toLowerCase()
-                    .equals(im.amomo.volley.OkRequest.HEADER_CONTENT_ENCODING.toLowerCase())
-                    && entry.getValue()
-                    .toLowerCase()
-                    .equals(im.amomo.volley.OkRequest.ENCODING_GZIP.toLowerCase())) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -225,14 +211,25 @@ public class OkNetwork implements Network {
         }
 
         if (entry.serverDate > 0) {
-            Date refTime = new Date(entry.serverDate);
-            headers.put("If-Modified-Since", DateUtils.formatDate(refTime));
+            Date refTime = new Date(entry.lastModified);
+            headers.put("If-Modified-Since", mDateFormatter.format(refTime));
         }
     }
 
     protected void logError(String what, String url, long start) {
         long now = SystemClock.elapsedRealtime();
         VolleyLog.v("HTTP ERROR(%s) %d ms to fetch %s", what, (now - start), url);
+    }
+
+    /**
+     * Converts Headers[] to Map<String, String>.
+     */
+    protected static Map<String, String> convertHeaders(Headers headers) {
+        Map<String, String> result = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
+        for (String field : headers.names()) {
+            result.put(field, headers.get(field));
+        }
+        return result;
     }
 
 }

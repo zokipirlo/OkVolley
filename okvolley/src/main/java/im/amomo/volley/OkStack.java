@@ -11,5 +11,5 @@ import java.util.Map;
  * Created by GoogolMo on 6/4/14.
  */
 public interface OkStack {
-    Response performRequest(Request<?> request, Map<String, String> map) throws IOException, AuthFailureError;
+    Response performRequest(Request<?> request, Map<String, String> additionalHeaders) throws IOException, AuthFailureError;
 }

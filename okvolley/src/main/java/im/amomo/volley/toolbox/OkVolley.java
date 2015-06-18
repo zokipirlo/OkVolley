@@ -1,56 +1,63 @@
 package im.amomo.volley.toolbox;
 
+import com.android.volley.Cache;
+import com.android.volley.toolbox.DiskBasedCache;
+import com.squareup.okhttp.CertificatePinner;
+
 import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.os.Build;
-import com.android.volley.Cache;
-import com.android.volley.Network;
-import com.android.volley.RequestQueue;
-import com.android.volley.toolbox.DiskBasedCache;
-import com.android.volley.toolbox.Volley;
-import im.amomo.volley.OkHttpStack;
-import im.amomo.volley.OkNetwork;
-import im.amomo.volley.OkRequest;
-import im.amomo.volley.OkStack;
 
-import javax.net.ssl.HostnameVerifier;
 import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 
+import javax.net.ssl.HostnameVerifier;
+
+import im.amomo.volley.OkHttpStack;
+import im.amomo.volley.OkNetwork;
+import im.amomo.volley.OkRequest;
+import im.amomo.volley.OkRequestQueue;
+import im.amomo.volley.OkStack;
+
 /**
  * Created by GoogolMo on 10/22/13.
+ * Modified by zoki on 06/17/15
  */
-public class OkVolley extends Volley {
+public class OkVolley {
 
-    private static RequestQueue InstanceRequestQueue;
-    private static Cache InstanceCache;
-    private static Network InstanceNetwork;
-    private static OkHttpStack OkHttpStack;
-
+    private static final String INIT_ERROR = "OkVolley must be initialized! Call init method in Application class";
     private static final String VERSION = "OkVolley/1.0";
-
     /**
      * Default on-disk cache directory.
      */
     private static final String DEFAULT_CACHE_DIR = "volley";
 
-    private static OkVolley Instance;
+    private static OkVolley _instance;
     private String mUserAgent;
 
     private Map<String, String> mRequestHeaders;
 
-    private Context mContext;
+    private OkRequestQueue mRequestQueue;
+    private Cache mCache;
+    private OkNetwork mNetwork;
+    private OkHttpStack mHttpStack;
 
     public static OkVolley getInstance() {
-        if (Instance == null) {
-            Instance = new OkVolley();
+        if (_instance == null) {
+            throw new IllegalStateException(INIT_ERROR);
         }
-        return Instance;
+        return _instance;
     }
 
-    public OkVolley() {
+    private OkVolley(Context context) {
+        mUserAgent = generateDefaultUserAgent(context);
+        mRequestHeaders = new HashMap<>();
+        mRequestHeaders.put(OkRequest.HEADER_USER_AGENT, mUserAgent);
+        mRequestHeaders.put(OkRequest.HEADER_ACCEPT_CHARSET, OkRequest.CHARSET_UTF8);
+
+        mRequestQueue = newDefaultRequestQueue(context);
     }
 
     /**
@@ -59,14 +66,11 @@ public class OkVolley extends Volley {
      * @param context Context
      * @return this Volley Object
      */
-    public OkVolley init(Context context) {
-        this.mContext = context;
-        InstanceRequestQueue = newRequestQueue(context);
-        mUserAgent = generateUserAgent(context);
-        mRequestHeaders = new HashMap<String, String>();
-        mRequestHeaders.put(OkRequest.HEADER_USER_AGENT, mUserAgent);
-        mRequestHeaders.put(OkRequest.HEADER_ACCEPT_CHARSET, OkRequest.CHARSET_UTF8);
-        return this;
+    public static OkVolley init(Context context) {
+        if (_instance == null) {
+            _instance = new OkVolley(context);
+        }
+        return _instance;
     }
 
     /**
@@ -75,8 +79,11 @@ public class OkVolley extends Volley {
      * @param userAgent user-agent
      * @return this Volley Object
      */
-    public OkVolley setUserAgent(String userAgent) {
+    public OkVolley setUserAgent(String userAgent)
+    {
         this.mUserAgent = userAgent;
+        mRequestHeaders.put(OkRequest.HEADER_USER_AGENT, mUserAgent);
+        mRequestQueue.updateRequestHeaders(mRequestHeaders);
         return this;
     }
 
@@ -86,7 +93,7 @@ public class OkVolley extends Volley {
      * @param context
      * @return
      */
-    public static String generateUserAgent(Context context) {
+    public static String generateDefaultUserAgent(Context context) {
         StringBuilder ua = new StringBuilder("api-client/");
         ua.append(VERSION);
 
@@ -142,7 +149,7 @@ public class OkVolley extends Volley {
      * @return this Volley Object
      */
     public OkVolley setHostnameTrustedVerifier(HostnameVerifier verifier) {
-        OkHttpStack.setHostnameVerifier(verifier);
+        mHttpStack.setHostnameVerifier(verifier);
         return this;
     }
 
@@ -152,17 +159,18 @@ public class OkVolley extends Volley {
      * @return this Volley Object
      */
     public OkVolley trustAllCerts() {
-        OkHttpStack.trustAllCerts();
+        mHttpStack.trustAllCerts();
         return this;
     }
 
     /**
-     * get the default request headers
+     * pins certificate
      *
-     * @return the default request headers
+     * @return this Volley Object
      */
-    public Map<String, String> getDefaultHeaders() {
-        return this.mRequestHeaders;
+    public OkVolley pinnCert(final CertificatePinner certificatePinner){
+          mHttpStack.pinnCert(certificatePinner);
+        return this;
     }
 
     /**
@@ -170,52 +178,35 @@ public class OkVolley extends Volley {
      *
      * @return default {@link com.android.volley.RequestQueue}
      */
-    public RequestQueue getRequestQueue() {
-        if (InstanceRequestQueue == null) {
-            InstanceRequestQueue = newRequestQueue(mContext);
-        }
-        return InstanceRequestQueue;
+    public OkRequestQueue getRequestQueue() {
+         return mRequestQueue;
     }
 
-    /**
-     * getRquest queue static
-     *
-     * @param context
-     * @return {@link com.android.volley.RequestQueue}
-     */
-    @Deprecated
-    public static RequestQueue getRequestQueue(Context context) {
-        if (InstanceRequestQueue == null) {
-            InstanceRequestQueue = newRequestQueue(context);
-        }
-        return InstanceRequestQueue;
+    public OkRequestQueue newRequestQueue(Context context) {
+        File cacheDir = new File(context.getCacheDir(), DEFAULT_CACHE_DIR);
+
+        OkRequestQueue queue = new OkRequestQueue(new DiskBasedCache(cacheDir), new OkNetwork(getDefaultHttpStack()));
+        queue.start();
+
+        return queue;
     }
+    protected OkRequestQueue newDefaultRequestQueue(Context context)
+    {
+        mNetwork = new OkNetwork(getDefaultHttpStack());
 
-    public static RequestQueue newRequestQueue(Context context) {
+        File cacheDir = new File(context.getCacheDir(), DEFAULT_CACHE_DIR);
+        mCache = new DiskBasedCache(cacheDir);
 
-        if (InstanceNetwork == null) {
-            InstanceNetwork = new OkNetwork(getDefaultHttpStack());
-        }
-
-        if (InstanceCache == null) {
-            File cache = context.getExternalCacheDir();
-            if (cache == null) {
-                cache = context.getCacheDir();
-            }
-            File cacheDir = new File(cache, DEFAULT_CACHE_DIR);
-            InstanceCache = new DiskBasedCache(cacheDir);
-        }
-
-        RequestQueue queue = new RequestQueue(InstanceCache, InstanceNetwork);
+        OkRequestQueue queue = new OkRequestQueue(mCache, mNetwork, mRequestHeaders);
         queue.start();
 
         return queue;
     }
 
-    protected static OkStack getDefaultHttpStack() {
-        if (OkHttpStack == null) {
-            OkHttpStack = new OkHttpStack();
+    protected OkStack getDefaultHttpStack() {
+        if (mHttpStack == null) {
+            mHttpStack = new OkHttpStack();
         }
-        return OkHttpStack;
+        return mHttpStack;
     }
 }
